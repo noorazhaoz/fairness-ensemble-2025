@@ -8,7 +8,7 @@ This repository provides the implementation for the ensemble-based post-processi
 - Mixture-of-Experts (MoE) post-processing  
 - Single-pretrained and Two-pretrained variants  
 - Supports performance–fairness trade-off experiments  
-- Quickstart demo for the Adult dataset  
+- Quickstart demo for the Binary (Adult dataset) Classification and Survival Analysis (Whas dataset) tasks.   
 
 ---
 
