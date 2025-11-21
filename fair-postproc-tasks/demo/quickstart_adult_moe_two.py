@@ -41,15 +41,6 @@ def cross_entropy_loss(perf_probs, weighted_probs):
 
 
 # ----------------------------------------------------------------------
-# Post-processing fairness model outputs with temperature scaling
-# ----------------------------------------------------------------------
-def pp_model_output(X, weights, bias, temperature=2.0):
-    logits = np.dot(X, weights) + bias
-    logits /= temperature
-    return 1.0 / (1.0 + np.exp(-logits))
-
-
-# ----------------------------------------------------------------------
 # Weight regressor (Logistic Regression in weight space)
 # ----------------------------------------------------------------------
 class WeightRegressor:
