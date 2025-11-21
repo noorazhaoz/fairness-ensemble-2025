@@ -11,36 +11,81 @@ from utils.common import predict_prob
 
 class MixtureTwoPretrained:
     """
-    Two-pretrained Mixture:
-      Train (or accept) two base models — a performance-based model and a fairness model — and
-      combine their task-specific scores with a global weight λ:
+    Two-pretrained Mixture (model-agnostic, post-processing).
 
-          y_hat = (1 - λ) * s_perf + λ * s_fair
+    We assume TWO base models are already chosen:
+
+      - A performance-focused model  f_perf
+      - A simpler / more interpretable fairness-oriented model  f_fair
+        (often trained on a restricted feature set, e.g. a single feature
+         such as 'education-num' or 'lenstay', but this is dataset-specific
+         and NOT enforced by this class).
+
+    At prediction time, we combine their task-specific scores with a
+    global mixture weight λ:
+
+        s_mix(x) = (1 - λ) * s_perf(x) + λ * s_fair(x),
+
+    where s_perf, s_fair are scores produced by `score_fn` (e.g., predicted
+    probabilities for binary classification, regression outputs, or
+    survival probabilities/risk scores).
 
     Parameters
     ----------
     perf_model : estimator
         Performance-focused estimator (unfitted or already fitted).
+        Typically uses the full feature set.
+
     fair_model : estimator
-        Fairness-focused estimator (unfitted or already fitted).
+        Fairness-oriented (often simpler) estimator.
+        In practice this may be trained on a restricted subset of features
+        (e.g., a single feature) via a ColumnTransformer / Pipeline.
+        This class does not assume or enforce a particular subset; the
+        user controls that when constructing `fair_model`.
+
     lam : float, default=0.5
         Global mixture weight λ in [0, 1].
+        λ = 0   → use only the performance model.
+        λ = 1   → use only the fairness-oriented model.
+
     score_fn : callable or None
         Function mapping (model, X, **score_kwargs) -> 1D score array.
-        Defaults to binary probability via `predict_prob`.
+        This makes the class task-agnostic.
+
+        Typical choices:
+        - Binary classification:
+              score_fn=lambda m, X, **kw: predict_prob(m, X)
+        - Regression:
+              score_fn=lambda m, X, **kw: m.predict(X)
+        - Survival (e.g. risk score):
+              score_fn=cox_risk_lifelines   # user-defined
+          or survival probability at a fixed time grid.
+
+        By default, we use `utils.common.predict_prob`, which returns
+        P(y=1 | x) for binary classifiers.
+
     auto_fit : bool, default=True
-        If True, `fit` will train copies of `perf_model` and `fair_model` on (X, y).
-        If False, models are assumed already trained and will be used as-is.
+        If True, `fit` will train copies of `perf_model` and `fair_model`
+        on (X, y). If False, models are assumed already trained and will
+        be used as-is.
+
     clone_on_fit : bool, default=True
-        If True, clone the given estimators before fitting to avoid in-place modification.
+        If True and sklearn.clone is available, clone the given estimators
+        before fitting, to avoid modifying user-provided objects in-place.
 
     Notes
     -----
-    - This class *does not* learn λ; it just applies a fixed global trade-off.
-      (If you later want λ selection, we can add lam='auto' with a validation objective.)
-    - `score_fn` lets you reuse the same combiner for binary/regression/survival tasks.
-      For binary:  score_fn=lambda m, X: predict_prob(m, X)
-      For survival (Cox risk with lifelines): score_fn=cox_risk_lifelines
+    - This class *does not* learn λ. It simply applies a FIXED global
+      trade-off chosen by the user (e.g., λ selected on a validation set
+      via a fairness–performance objective defined elsewhere).
+
+    - The choice of `fair_model` architecture and its feature subset is
+      dataset-dependent. For example:
+          * Adult (binary):  fair_model = LR on 'education-num'
+          * Insurance (regression): fair_model = LinearRegression on 'bmi'
+          * WHAS (survival): fair_model = CoxPH on 'lenstay'
+
+      All these are compatible as long as `score_fn` returns a 1D score.
     """
 
     def __init__(
@@ -55,6 +100,7 @@ class MixtureTwoPretrained:
         self.perf_model = perf_model
         self.fair_model = fair_model
         self.lam = float(lam)
+        # default for binary classification: probability of class 1
         self.score_fn = score_fn or (lambda m, X, **kw: predict_prob(m, X))
         self.auto_fit = bool(auto_fit)
         self.clone_on_fit = bool(clone_on_fit)
@@ -73,7 +119,8 @@ class MixtureTwoPretrained:
         **score_kwargs,
     ):
         """
-        Fit the two base models if `auto_fit=True`, otherwise mark as ready.
+        Fit the two base models if `auto_fit=True`, otherwise just attach
+        the user-provided trained models.
 
         Parameters
         ----------
@@ -85,8 +132,8 @@ class MixtureTwoPretrained:
         fit_kwargs_fair : dict, optional
             Extra kwargs for fair_model.fit.
         **score_kwargs :
-            Reserved for score_fn if you later need to compute scores during fit
-            (not used here; scoring is done at predict time).
+            Reserved for score_fn if you later need to pass arguments at
+            fit time (here we only score at prediction time).
         """
         fit_kwargs_perf = fit_kwargs_perf or {}
         fit_kwargs_fair = fit_kwargs_fair or {}
@@ -103,7 +150,6 @@ class MixtureTwoPretrained:
                 perf = self.perf_model
                 fair = self.fair_model
 
-            # fit
             perf.fit(X, y, **fit_kwargs_perf)
             fair.fit(X, y, **fit_kwargs_fair)
 
@@ -130,10 +176,13 @@ class MixtureTwoPretrained:
     def predict_proba(self, X, **score_kwargs):
         """
         Return the mixed score:
-          (1 - λ) * s_perf(X) + λ * s_fair(X)
+            s_mix(x) = (1 - λ) * s_perf(x) + λ * s_fair(x).
 
-        For binary classification with the default score_fn, this is a probability in [0,1].
-        For regression/survival, it's the same scale as the chosen score_fn.
+        For binary classification with the default score_fn, this is a
+        probability in [0,1].
+
+        For regression/survival, s_mix is on the same scale as the scores
+        returned by `score_fn` (e.g., predicted value or risk score).
         """
         if not self.is_fitted_:
             raise RuntimeError("Model not fitted. Call .fit(...) first.")
